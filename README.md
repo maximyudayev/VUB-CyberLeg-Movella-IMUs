@@ -19,3 +19,6 @@ cd <PATH-TO-INSTALL-FOLDER-LIKE: C:\Program Files\Movella\DOT PC SDK 2023.6\SDK 
 
 pip install movelladot_pc_sdk-2023.6.0-cp310-none-win_amd64.whl
 ```
+
+Next:
+To log data on the sbRIO, make another loop in LabView that sends packets to 'localhost'/127.0.0.1, and have a Python script run on the Linux shell of the sbRIO, that writes the captured UDP data to a file that's then downloaded from it.
