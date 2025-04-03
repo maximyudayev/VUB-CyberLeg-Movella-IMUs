@@ -223,6 +223,7 @@ class MovellaFacade:
           print("Failed to disable logging.")
         self._connected_devices[device_id] = None
     self._discovered_devices = list()
-    self._manager.stopSync()
+    if self._is_sync_devices:
+      self._manager.stopSync()
     self._manager.close()
     self._is_measuring = False
