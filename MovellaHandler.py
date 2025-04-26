@@ -26,25 +26,24 @@
 # ############
 
 import queue
-from typing import Callable
+from typing import Any, Callable
 import movelladot_pc_sdk as mdda
 from collections import OrderedDict
 
 from datastructures import TimestampAlignedFifoBuffer
 from user_settings import *
-import time
+from time import perf_counter
 
 
 class DotDataCallback(mdda.XsDotCallback):
   def __init__(self,
-               on_packet_received: Callable):
+               on_packet_received: Callable[[float, Any, Any], None]):
     super().__init__()
     self._on_packet_received = on_packet_received
 
 
   def onLiveDataAvailable(self, device, packet):
-    toa_s: float = time.time()
-    self._on_packet_received(toa_s, device, packet)
+    self._on_packet_received(perf_counter(), device, packet)
 
 
 class DotConnectivityCallback(mdda.XsDotCallback):
@@ -80,7 +79,7 @@ class MovellaFacade:
     self._is_all_discovered_queue = queue.Queue(maxsize=1)
     self._device_mapping = device_mapping
     self._discovered_devices = list()
-    self._connected_devices = OrderedDict([(v, None) for v in device_mapping.values()])
+    self._connected_devices: OrderedDict[str, Any] = OrderedDict([(v, None) for v in device_mapping.values()])
     sampling_period = round(1/sampling_rate_hz * 10000)
     self._buffer = TimestampAlignedFifoBuffer(keys=device_mapping.values(),
                                               timesteps_before_stale=timesteps_before_stale,
@@ -117,18 +116,19 @@ class MovellaFacade:
       mag = packet.calibratedMagneticField()
       timestamp_fine = packet.sampleTimeFine()
       data = {
-        "device_id":            device_id,                          # str
+        "device_id":            device_id,
         "acc":                  acc,
         "gyr":                  gyr,
         "mag":                  mag,
-        "toa_s":                toa_s,                              # float
-        "timestamp_fine":       timestamp_fine,                     # uint32
+        "toa_s":                toa_s,
+        "timestamp_fine":       timestamp_fine,
       }
       if self._is_get_orientation: data["quaternion"] = packet.orientationQuaternion()
       self._buffer.plop(key=device_id, data=data, timestamp=timestamp_fine)
 
     def on_device_disconnected(device):
       device_id: str = str(device.deviceId())
+      print("%s disconnected"%device_id)
       self._connected_devices[device_id] = None
 
     # Attach callback handler to connection manager
@@ -148,6 +148,7 @@ class MovellaFacade:
       device = self._manager.device(port_info.deviceId())
       device_id: str = str(port_info.deviceId())
       self._connected_devices[device_id] = device
+      print("connected to %s"%port_info.bluetoothAddress(), flush=True)
 
     # Make sure all connected devices have the same filter profile and output rate
     for device_id, device in self._connected_devices.items():
@@ -164,13 +165,13 @@ class MovellaFacade:
       if not self._sync(attempts=3):
         return False
 
-    for device_id, device in self._connected_devices.items():
-      device.setLogOptions(mdda.XsLogOptions_Euler)
-      logFileName = "logfile_" + device.bluetoothAddress().replace(':', '-') + ".csv"
-      print(f"Enable logging to: {logFileName}")
-      if not device.enableLogging(logFileName):
-        print(f"Failed to enable logging. Reason: {device.lastResultText()}")
-        return False
+    # for device_id, device in self._connected_devices.items():
+    #   device.setLogOptions(mdda.XsLogOptions_Euler)
+    #   logFileName = "logfile_" + device.bluetoothAddress().replace(':', '-') + ".csv"
+    #   print(f"Enable logging to: {logFileName}")
+    #   if not device.enableLogging(logFileName):
+    #     print(f"Failed to enable logging. Reason: {device.lastResultText()}")
+    #     return False
 
     # Set dots to streaming mode and break out of the loop if successful
     if not self._stream():
@@ -185,7 +186,7 @@ class MovellaFacade:
   def _sync(self, attempts=1) -> bool:
     # NOTE: Syncing may not work on some devices due to poor BT drivers 
     while attempts > 0:
-      print(f"{attempts} attempting left to sync DOTs.")
+      print(f"{attempts} attempts left to sync DOTs.")
       if self._manager.startSync(self._connected_devices[self._master_device_id].bluetoothAddress()):
         return True
       else:
@@ -219,8 +220,8 @@ class MovellaFacade:
       if device is not None:
         if not device.stopMeasurement():
           print("Failed to stop measurement.")
-        if not device.disableLogging():
-          print("Failed to disable logging.")
+        # if not device.disableLogging():
+        #   print("Failed to disable logging.")
         self._connected_devices[device_id] = None
     self._discovered_devices = list()
     if self._is_sync_devices:

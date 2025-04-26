@@ -27,10 +27,10 @@
 
 from collections import OrderedDict
 import socket
+import threading
 from MovellaHandler import MovellaFacade
 import numpy as np
-import time
-import struct
+from time import perf_counter
 
 
 if __name__ == "__main__":
@@ -45,38 +45,42 @@ if __name__ == "__main__":
     "foot_left"   : "40195BFD80C200D1",
   }
   master_device = 'pelvis' # wireless dot relaying messages, must match a key in the `device_mapping`
-  sampling_rate_hz = 1 # can be [1, 4, 10, 12, 15, 20, 30, 60] -> use 1Hz to visually test how long network latency is.
+  sampling_rate_hz = 60 # can be [1, 4, 10, 12, 15, 20, 30, 60] -> use 1Hz to visually test how long network latency is.
   is_get_orientation = False # at 60Hz, Quaternion from DOTs makes packets too large -> dropout in some sensors
   is_sync_devices = True # hopefully your wireless driver supports the 
 
   prosthesis_ip = '192.168.0.101'   # ? Prosthesis IP or localhost (to simulate receiving)
-  prosthesis_port = 51702           # ? your port from LabView
+  prosthesis_port = 51705           # ? your port from LabView
+  daq_ip = '192.168.0.100'
+  daq_port = 51705
 
   ###################
   ###### LOGIC ######
   ###################
-  handler = MovellaFacade(device_mapping=device_mapping, 
+  handler = MovellaFacade(device_mapping=device_mapping,
                           master_device=master_device,
                           sampling_rate_hz=sampling_rate_hz,
                           is_get_orientation=is_get_orientation,
-                          is_sync_devices=is_sync_devices)
+                          is_sync_devices=is_sync_devices,
+                          timesteps_before_stale=10)
   num_trackers = len(device_mapping)
   row_id_mapping = OrderedDict([(device_id, row_id) for row_id, device_id in enumerate(device_mapping.values())])
   
   # Keep reconnecting until success
   while not handler.initialize(): 
     handler.cleanup()
+  print("Started streaming.", flush=True)
 
   # Create a UDP socket
-  sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-  def process_data() -> None:
+  def process_data() -> bool:
     # Stamps full-body snapshot with system time of start of processing, not time-of-arrival.
     # NOTE: time-of-arrival available with each packet.
-    process_time_s: float = time.time()
     # Retrieve the oldest enqueued packet for each sensor.
     snapshot = handler.get_snapshot()
-    if snapshot is not None: 
+    if snapshot is not None:
+      # process_time_s: float = perf_counter()
       acceleration = np.empty((num_trackers, 3), dtype=np.float32)
       acceleration.fill(np.nan)
       gyroscope = np.empty((num_trackers, 3), dtype=np.float32)
@@ -87,7 +91,7 @@ if __name__ == "__main__":
         orientation = np.empty((num_trackers, 4), dtype=np.float32)
         orientation.fill(np.nan)
       timestamp = np.zeros((num_trackers), np.uint32)
-      toa_s = np.empty((num_trackers), dtype=np.float32)
+      toa_s = np.empty((num_trackers), dtype=np.float64)
       toa_s.fill(np.nan)
       counter = np.zeros((num_trackers), np.uint32)
 
@@ -105,21 +109,27 @@ if __name__ == "__main__":
       
       # The payload contents are bytes with float32 structured as:
       payload: bytes = acceleration.tobytes()+gyroscope.tobytes()+magnetometer.tobytes() # 5x3 (tracker dimensions) x3 (acc/gyr/mag) x4 (bytes) = 180 bytes
-      payload += counter.tobytes() # just to test the time it takes to deliver the packet to sbRIO, makes it 180+20 bytes total
-      send_time_s: float = time.time()
-      sock_send.sendto(payload, (prosthesis_ip, prosthesis_port))
-      print("Sent: ", counter, flush=True)
-    
+      sock.sendto(payload, (prosthesis_ip, prosthesis_port))
+      # print("TOA diff: ", toa_s-process_time_s, " @ %.6f"%process_time_s, flush=True)
+      return False
+    elif snapshot is None and not handler._is_measuring:
+      return True
+
 
   #######################
   ###### MAIN LOOP ######
   #######################
-  try:
-    while True:
-      process_data()
-  except KeyboardInterrupt:
-    print("Keyboard interrupt signalled, quitting...", flush=True)
-  finally:
-    handler.cleanup()
-    sock_send.close()
-    print("Experiment ended, thank you for using our system <3", flush=True)
+  def foo():
+    is_continue = False
+    while not is_continue:
+      is_continue = process_data()
+
+  t = threading.Thread(target=foo, args=())
+  t.start()
+  is_exit = False
+  while not is_exit:
+    is_exit = input("Enter 'q' to exit: ") == 'q'
+  handler.cleanup()
+  t.join()
+  sock.close()
+  print("Experiment ended, thank you for using our system <3", flush=True)

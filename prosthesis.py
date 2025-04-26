@@ -35,20 +35,20 @@ if __name__ == "__main__":
   ###### CONFIGURATION ######
   ###########################
   prosthesis_ip = '192.168.0.101'   # ? Prosthesis IP
-  prosthesis_port = 51702           # ? your port from LabView
+  prosthesis_port = 51705           # ? your port from LabView
+  daq_ip = '192.168.0.200'
+  daq_port = 51705
 
   ###################
   ###### LOGIC ######
   ###################
   # Create a UDP socket
-  sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-  sock_recv.bind((prosthesis_ip, prosthesis_port))
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  sock.bind((prosthesis_ip, prosthesis_port))
 
 
   def process_data() -> None:
-    payload_recv = sock_recv.recv(200) # 180 bytes of IMU data and 20 bytes of counter data to keep measure how long it takes to deliver. 
-    counters = struct.unpack('IIIII', payload_recv[180:200]) # 0,1,2,3,4
-    print("Received: ", counters, flush=True) # This should get printed close to instantly to the print log in the sender code.
+    payload_recv = sock.recv(180) # 180 bytes of IMU data and 20 bytes of counter data to keep measure how long it takes to deliver. 
     
     recv_time_s: float = time.time()
     # Cast each 12 bytes (3 dimensions of 4 byte-fp32 of 1 tracker) into separate measurements
@@ -90,5 +90,5 @@ if __name__ == "__main__":
   except KeyboardInterrupt:
     print("Keyboard interrupt signalled, quitting...", flush=True)
   finally:
-    sock_recv.close()
+    sock.close()
     print("Experiment ended, thank you for using our system <3", flush=True)
