@@ -45,7 +45,7 @@ if __name__ == "__main__":
     "foot_left"   : "40195BFD80C200D1",
   }
   master_device = 'pelvis' # wireless dot relaying messages, must match a key in the `device_mapping`
-  sampling_rate_hz = 60 # can be [1, 4, 10, 12, 15, 20, 30, 60] -> use 1Hz to visually test how long network latency is.
+  sampling_rate_hz = 30 # can be [1, 4, 10, 12, 15, 20, 30, 60] -> use 1Hz to visually test how long network latency is.
   is_get_orientation = False # at 60Hz, Quaternion from DOTs makes packets too large -> dropout in some sensors
   is_sync_devices = True # hopefully your wireless driver supports the 
 
@@ -110,9 +110,9 @@ if __name__ == "__main__":
       # The payload contents are bytes with float32 structured as:
       payload: bytes = acceleration.tobytes()+gyroscope.tobytes()+magnetometer.tobytes() # 5x3 (tracker dimensions) x3 (acc/gyr/mag) x4 (bytes) = 180 bytes
       sock.sendto(payload, (prosthesis_ip, prosthesis_port))
-      # print("TOA diff: ", toa_s-process_time_s, " @ %.6f"%process_time_s, flush=True)
+      # print("TOA diff: ", process_time_s-toa_s, " @ %.6f"%process_time_s, flush=True)
       return False
-    elif snapshot is None and not handler._is_measuring:
+    elif snapshot is None and not handler._is_more:
       return True
 
 
@@ -124,12 +124,13 @@ if __name__ == "__main__":
     while not is_continue:
       is_continue = process_data()
 
-  t = threading.Thread(target=foo, args=())
+  t = threading.Thread(target=foo)
   t.start()
   is_exit = False
   while not is_exit:
     is_exit = input("Enter 'q' to exit: ") == 'q'
   handler.cleanup()
   t.join()
+  handler.close()
   sock.close()
   print("Experiment ended, thank you for using our system <3", flush=True)

@@ -26,6 +26,7 @@
 # ############
 
 import queue
+import threading
 from typing import Any, Callable
 import movelladot_pc_sdk as mdda
 from collections import OrderedDict
@@ -69,8 +70,8 @@ class DotConnectivityCallback(mdda.XsDotCallback):
 
 
 class MovellaFacade:
-  def __init__(self, 
-               device_mapping: dict[str, str], 
+  def __init__(self,
+               device_mapping: dict[str, str],
                master_device: str,
                sampling_rate_hz: int,
                is_get_orientation: bool,
@@ -85,6 +86,7 @@ class MovellaFacade:
                                               timesteps_before_stale=timesteps_before_stale,
                                               sampling_period=sampling_period,
                                               num_bits_timestamp=32)
+    self._packet_queue = queue.Queue()
     self._master_device_id = device_mapping[master_device]
     self._sampling_rate_hz = sampling_rate_hz
     self._is_get_orientation = is_get_orientation
@@ -97,7 +99,7 @@ class MovellaFacade:
 
 
   def initialize(self) -> bool:
-    self._is_measuring = True
+    self._is_more = True
     # Create connection manager
     self._manager = mdda.XsDotConnectionManager()
     if self._manager is None:
@@ -124,7 +126,7 @@ class MovellaFacade:
         "timestamp_fine":       timestamp_fine,
       }
       if self._is_get_orientation: data["quaternion"] = packet.orientationQuaternion()
-      self._buffer.plop(key=device_id, data=data, timestamp=timestamp_fine)
+      self._packet_queue.put({"key": device_id, "data": data, "timestamp": timestamp_fine})
 
     def on_device_disconnected(device):
       device_id: str = str(device.deviceId())
@@ -173,18 +175,33 @@ class MovellaFacade:
     #     print(f"Failed to enable logging. Reason: {device.lastResultText()}")
     #     return False
 
-    # Set dots to streaming mode and break out of the loop if successful
+    # Set dots to streaming mode and break out of the loop if successful.
     if not self._stream():
       return False
-    
+
+    # Funnels packets from the background thread-facing interleaved Queue of async packets, 
+    #   into aligned Deque datastructure.
+    def funnel_packets(packet_queue: queue.Queue, timeout: float = 5.0):
+      while True:
+        try:
+          next_packet = packet_queue.get(timeout=timeout)
+          self._buffer.plop(**next_packet)
+        except queue.Empty:
+          print("No more packets from Movella SDK, flush buffers into the output Queue.")
+          self._buffer.flush()
+          break
+
+    self._packet_funneling_thread = threading.Thread(target=funnel_packets, args=(self._packet_queue,))
+
     self._data_callback = DotDataCallback(on_packet_received=on_packet_received)
     self._manager.addXsDotCallbackHandler(self._data_callback)
+    self._packet_funneling_thread.start()
 
     return True
 
 
   def _sync(self, attempts=1) -> bool:
-    # NOTE: Syncing may not work on some devices due to poor BT drivers 
+    # NOTE: Syncing may not work on some devices due to poor BT drivers.
     while attempts > 0:
       print(f"{attempts} attempts left to sync DOTs.")
       if self._manager.startSync(self._connected_devices[self._master_device_id].bluetoothAddress()):
@@ -197,7 +214,7 @@ class MovellaFacade:
 
   def _stream(self) -> bool:
     # Start live data output. Make sure root node is last to go to measurement.
-    ordered_device_list: list[tuple[str, object]] = [*[(device_id, device) for device_id, device in self._connected_devices.items() 
+    ordered_device_list: list[tuple[str, object]] = [*[(device_id, device) for device_id, device in self._connected_devices.items()
                                                         if device_id != self._master_device_id], 
                                                     (self._master_device_id, self._connected_devices[self._master_device_id])]
 
@@ -212,7 +229,7 @@ class MovellaFacade:
 
 
   def get_snapshot(self) -> dict[str, dict | None] | None:
-    return self._buffer.yeet(is_running=self._is_measuring)
+    return self._buffer.yeet()
 
 
   def cleanup(self) -> None:
@@ -223,8 +240,12 @@ class MovellaFacade:
         # if not device.disableLogging():
         #   print("Failed to disable logging.")
         self._connected_devices[device_id] = None
+    self._is_more = False
     self._discovered_devices = list()
     if self._is_sync_devices:
       self._manager.stopSync()
+
+
+  def close(self) -> None:
     self._manager.close()
-    self._is_measuring = False
+    self._packet_funneling_thread.join()
